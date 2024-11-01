@@ -177,6 +177,8 @@ class Faithfulness(MetricWithLLM, SingleTurnMetric):
     sentence_segmenter: t.Optional[HasSegmentMethod] = None
     max_retries: int = 1
     _reproducibility: int = 1
+    
+    MAX_STATMENTS: int = 5
 
     @property
     def reproducibility(self):
@@ -256,6 +258,19 @@ class Faithfulness(MetricWithLLM, SingleTurnMetric):
         row = sample.to_dict()
         return await self._ascore(row, callbacks)
 
+    def _compute_cumulative_score(self, answers: NLIStatementOutput):
+        faithful_statements = sum(
+            1 if answer.verdict else 0 for answer in answers.statements
+        )
+        num_statements = len(answers.statements)
+        if num_statements:
+            score = faithful_statements
+        else:
+            logger.warning("No statements were generated from the answer.")
+            score = np.nan
+
+        return score
+
     async def _ascore(self, row: t.Dict, callbacks: Callbacks) -> float:
         """
         returns the NLI score for each (q, c, a) pair
@@ -271,8 +286,14 @@ class Faithfulness(MetricWithLLM, SingleTurnMetric):
         for component in statements_simplified.sentences:
             statements.extend(component.simpler_statements)
 
-        verdicts = await self._create_verdicts(row, statements, callbacks)
-        return self._compute_score(verdicts)
+        total_score = 0
+        for i in range(0, len(statements), self.MAX_STATMENTS):
+            final = min(len(statements), i+(self.MAX_STATMENTS-1))
+            verdicts = await self._create_verdicts(row, statements[i:final], callbacks)
+            total_score += self._compute_cumulative_score(verdicts)
+        num_statements = len(verdicts.statements)
+        total_score = total_score/num_statements
+        return total_score
 
 
 @dataclass
